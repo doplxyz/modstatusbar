@@ -3,9 +3,9 @@
 // @id             IITC-plugin-mod-statusbar
 // @name           IITC plugin: MOD abbreviation in statusbar
 // @category       d.org.addon
-// @version        1.2.2
+// @version        1.2.3
 // @namespace      https://github.com/IITC-CE/ingress-intel-total-conversion
-// @description    [1.2.2]ステータスバーのポータル名の前に、装着MODの略号を表示する。ON/OFFトグルと略号のユーザーカスタマイズに対応。
+// @description    [1.2.3]ステータスバーのポータル名の前に、装着MODの略号を色付きで表示する。ON/OFFトグルと略号・色のユーザーカスタマイズに対応。
 // @match          https://intel.ingress.com/*
 // @grant          none
 // ==/UserScript==
@@ -22,7 +22,9 @@ function wrapper(plugin_info) {
 
     // ---- 設定キー ---------------------------------------------------------
     self.KEY_ENABLED = 'plugin-mod-statusbar-enabled';
+    self.KEY_COLORED = 'plugin-mod-statusbar-colored';
     self.KEY_MAP     = 'plugin-mod-statusbar-map';
+    self.KEY_COLORS  = 'plugin-mod-statusbar-colors';
 
     // ---- 既定の略号テーブル ----------------------------------------------
     // キーは "<正規化MOD名>|<RARITY>"。
@@ -51,17 +53,53 @@ function wrapper(plugin_info) {
         'itoentransmuter-|VERY_RARE':    'IT-',
     };
 
+    // ---- 既定の色テーブル (mod-overhead と同一の配色) ----------------------
+    // レアリティ既定色 (個別色が未定義のMODのフォールバック用)
+    self.rarityColors = {
+        COMMON:    '#8FF0A4',
+        RARE:      '#3584E4',
+        VERY_RARE: '#E01B24'
+    };
+
+    self.defaultColors = {
+        'portalshield|COMMON':           '#8FF0A4',
+        'portalshield|RARE':             '#3584E4',
+        'portalshield|VERY_RARE':        '#FF66FF',
+        'aegisshield|VERY_RARE':         '#E01B24',
+        'multi-hack|COMMON':             '#8FF0A4',
+        'multi-hack|RARE':               '#3584E4',
+        'multi-hack|VERY_RARE':          '#E01B24',
+        'heatsink|COMMON':               '#8FF0A4',
+        'heatsink|RARE':                 '#3584E4',
+        'heatsink|VERY_RARE':            '#E01B24',
+        'linkamp|RARE':                  '#3584E4',
+        'linkamp|VERY_RARE':             '#E01B24',
+        'softbankultralink|VERY_RARE':   '#F6D32D',
+        'turret|RARE':                   '#3584E4',
+        'forceamp|RARE':                 '#3584E4',
+        'itoentransmuter+|VERY_RARE':    '#FF66FF',
+        'itoentransmuter-|VERY_RARE':    '#FF66FF',
+    };
+
     self.userMap = {};
+    self.userColors = {};
     self.effectiveMap = {};
     self.enabled = true;
+    self.colored = true;
 
     // ---- 設定の読み書き ---------------------------------------------------
     self.loadSettings = function () {
         self.enabled = (localStorage[self.KEY_ENABLED] !== 'false'); // 既定ON
+        self.colored = (localStorage[self.KEY_COLORED] !== 'false'); // 既定ON
         try {
             self.userMap = JSON.parse(localStorage[self.KEY_MAP] || '{}') || {};
         } catch (e) {
             self.userMap = {};
+        }
+        try {
+            self.userColors = JSON.parse(localStorage[self.KEY_COLORS] || '{}') || {};
+        } catch (e) {
+            self.userColors = {};
         }
         self.effectiveMap = {};
         var k;
@@ -71,10 +109,12 @@ function wrapper(plugin_info) {
 
     self.saveSettings = function () {
         localStorage[self.KEY_ENABLED] = self.enabled ? 'true' : 'false';
+        localStorage[self.KEY_COLORED] = self.colored ? 'true' : 'false';
         localStorage[self.KEY_MAP]     = JSON.stringify(self.userMap || {});
+        localStorage[self.KEY_COLORS]  = JSON.stringify(self.userColors || {});
     };
 
-    // ---- MOD -> 略号 -------------------------------------------------------
+    // ---- MOD -> 略号/色 ----------------------------------------------------
     // + と - は Transmuter (+)/(-) の識別に必須のため保持する
     self.normalize = function (name) {
         return String(name || '').toLowerCase().replace(/[^a-z0-9+\-]/g, '');
@@ -89,40 +129,74 @@ function wrapper(plugin_info) {
         }
     };
 
-    self.modToAbbr = function (mod) {
-        if (!mod) return null;
-        var key = self.normalize(mod.name) + '|' + String(mod.rarity || '').toUpperCase();
-        if (key in self.effectiveMap) {
-            // 空文字が設定されているMODは非表示扱い
-            return self.effectiveMap[key] || null;
-        }
-        // 未知のMODは rarity頭文字 + 名前の子音2字 (+/-があれば付加) で自動生成
-        var norm = self.normalize(mod.name);
-        var sign = '';
-        if (norm.indexOf('+') !== -1) sign = '+';
-        else if (norm.indexOf('-') !== -1) sign = '-';
-        var base = norm.replace(/[^a-z0-9]/g, '').replace(/[aeiou]/g, '').toUpperCase().slice(0, 2);
-        return self.rarityPrefix(mod.rarity) + (base || '?') + sign;
+    self.defaultColorFor = function (key) {
+        if (key in self.defaultColors) return self.defaultColors[key];
+        var rarity = String(key).split('|')[1] || '';
+        return self.rarityColors[rarity] || '#DEDDDA';
     };
 
-    // 選択ポータルのMOD略号列を作る（例: "AS,VM,CPS,RPS"）
+    self.colorFor = function (key) {
+        return self.userColors[key] || self.defaultColorFor(key);
+    };
+
+    self.escapeHtml = function (s) {
+        return String(s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    };
+
+    // MOD 1個を {abbr, color} に変換する。非表示設定なら null。
+    self.modToEntry = function (mod) {
+        if (!mod) return null;
+        var key = self.normalize(mod.name) + '|' + String(mod.rarity || '').toUpperCase();
+        var abbr;
+        if (key in self.effectiveMap) {
+            // 空文字が設定されているMODは非表示扱い
+            abbr = self.effectiveMap[key] || null;
+        } else {
+            // 未知のMODは rarity頭文字 + 名前の子音2字 (+/-があれば付加) で自動生成
+            var norm = self.normalize(mod.name);
+            var sign = '';
+            if (norm.indexOf('+') !== -1) sign = '+';
+            else if (norm.indexOf('-') !== -1) sign = '-';
+            var base = norm.replace(/[^a-z0-9]/g, '').replace(/[aeiou]/g, '').toUpperCase().slice(0, 2);
+            abbr = self.rarityPrefix(mod.rarity) + (base || '?') + sign;
+        }
+        if (!abbr) return null;
+        return { abbr: abbr, color: self.colorFor(key) };
+    };
+
+    // 旧API互換
+    self.modToAbbr = function (mod) {
+        var e = self.modToEntry(mod);
+        return e ? e.abbr : null;
+    };
+
+    // 選択ポータルのMOD略号列を作る。
     // MODは詳細データ (portalDetail) にのみ含まれる。未ロード時は空を返す。
-    self.buildModString = function (guid) {
-        if (!guid || !window.portalDetail) return '';
+    self.buildModEntries = function (guid) {
+        if (!guid || !window.portalDetail) return [];
         var details = window.portalDetail.get(guid);
-        if (!details || !details.mods) return '';
+        if (!details || !details.mods) return [];
         var out = [];
         for (var i = 0; i < details.mods.length; i++) {
-            var a = self.modToAbbr(details.mods[i]);
-            if (a) out.push(a);
+            var e = self.modToEntry(details.mods[i]);
+            if (e) out.push(e);
         }
-        return out.join(',');
+        return out;
+    };
+
+    // 旧API互換 (例: "AS,VMH,CPS,RPS")
+    self.buildModString = function (guid) {
+        return self.buildModEntries(guid).map(function (e) { return e.abbr; }).join(',');
     };
 
     // ---- ステータスバーへの差し込み --------------------------------------
     // IITC.statusbar.portal.getData をラップし、返却データの title に
     // MOD略号列を前置する。ネイティブ描画 (app.setPortalStatus) と
     // HTML描画 (#mobileinfo) の両経路がこの getData を通るため、これで足りる。
+    // 色付けは render ラップ側 (hookRender) で行い、この時点では
+    // プレーンテキストのみを扱う。ネイティブ描画はHTMLを解釈できないため。
     // 注意: 返却オブジェクトは _lastSentData としてキャッシュされるため、
     // 破壊せずシャローコピーへ前置する。
     self.hookGetData = function () {
@@ -136,9 +210,47 @@ function wrapper(plugin_info) {
         p.getData = function (guid) {
             var data = p.__modOrigGetData.call(p, guid);
             if (!self.enabled || !data || !data.title) return data;
-            var mods = self.buildModString(data.guid || guid);
-            if (!mods) return data;
-            return Object.assign({}, data, { title: mods + ',' + data.title });
+            var entries = self.buildModEntries(data.guid || guid);
+            if (!entries.length) return data;
+            var plain = entries.map(function (e) { return e.abbr; }).join(',') + ',';
+            var out = Object.assign({}, data, { title: plain + data.title });
+            // render ラップが色付きHTMLへ置換するための情報 (プレーン前置文字列と
+            // 対応する色付きHTML)。render 未対応ビルドでは単に無視される。
+            out.__modPlain = plain;
+            out.__modHtml = entries.map(function (e) {
+                // 記号色 + 同色グロー (mod-overhead と同じ視認性向上手法)
+                return '<span style="color:' + e.color +
+                       ';text-shadow:0 0 3px ' + e.color + ',0 0 3px ' + e.color + ',0 0 1px #000;">' +
+                       self.escapeHtml(e.abbr) + '</span>';
+            }).join(',') + ',';
+            return out;
+        };
+        return true;
+    };
+
+    // HTML描画経路 (IITC.statusbar.portal.render) をラップし、title先頭に
+    // 前置したプレーンな略号列を色付き<span>へ置換する。
+    // render が存在しない/挙動が異なるビルドでは何もしない (略号は従来通り
+    // プレーンテキストで表示されるだけで、機能は失われない)。
+    self.hookRender = function () {
+        if (!(window.IITC && IITC.statusbar && IITC.statusbar.portal)) return false;
+        var p = IITC.statusbar.portal;
+        if (typeof p.render !== 'function') return false;
+        if (p.__modOrigRender) return true; // 二重ラップ防止
+        p.__modOrigRender = p.render;
+        p.render = function (data) {
+            var html = p.__modOrigRender.apply(p, arguments);
+            if (!self.enabled || !self.colored || typeof html !== 'string') return html;
+            if (!data || !data.__modPlain || !data.__modHtml) return html;
+            // render側でtitleがHTMLエスケープされる場合に備え、生とエスケープ済みの両方を探す
+            var candidates = [data.__modPlain, self.escapeHtml(data.__modPlain)];
+            for (var i = 0; i < candidates.length; i++) {
+                var idx = html.indexOf(candidates[i]);
+                if (idx !== -1) {
+                    return html.slice(0, idx) + data.__modHtml + html.slice(idx + candidates[i].length);
+                }
+            }
+            return html; // 見つからなければ従来のプレーン表示のまま
         };
         return true;
     };
@@ -153,7 +265,8 @@ function wrapper(plugin_info) {
     // ---- 設定UI ------------------------------------------------------------
     self.showSettings = function () {
         var keys = Object.keys(self.effectiveMap).sort();
-        var rows = '';
+        var thStyle = 'text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid #555;padding:2px 6px;';
+        var rows = '<tr><th style="' + thStyle + '">MOD</th><th style="' + thStyle + '">略号</th><th style="' + thStyle + '">色</th></tr>';
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i];
             var parts = k.split('|');
@@ -161,30 +274,38 @@ function wrapper(plugin_info) {
             rows += '<tr>' +
                 '<td style="padding:2px 6px;white-space:nowrap;">' + parts[0] + ' (' + parts[1] + ')</td>' +
                 '<td><input type="text" data-modkey="' + k + '" value="' + val + '" style="width:70px;"></td>' +
+                '<td><input type="color" data-modcolor="' + k + '" value="' + self.colorFor(k) +
+                '" style="width:40px;height:22px;padding:0;border:1px solid #555;background:none;vertical-align:middle;"></td>' +
                 '</tr>';
         }
 
         var html = '' +
             '<div style="margin-bottom:8px;">' +
-            '<label><input type="checkbox" id="modSbEnabled"' + (self.enabled ? ' checked' : '') + '> MOD略号を表示する</label>' +
+            '<label><input type="checkbox" id="modSbEnabled"' + (self.enabled ? ' checked' : '') + '> MOD略号を表示する</label><br>' +
+            '<label><input type="checkbox" id="modSbColored"' + (self.colored ? ' checked' : '') + '> 略号を色付きで表示する</label>' +
             '</div>' +
             '<div style="max-height:45vh;overflow:auto;border:1px solid #666;">' +
             '<table style="width:100%;border-collapse:collapse;">' + rows + '</table>' +
             '</div>' +
-            '<p style="margin:6px 0;font-size:11px;">略号は自由に書き換えられます。空欄にするとそのMODは非表示になります。' +
+            '<p style="margin:6px 0;font-size:11px;">略号と色は自由に書き換えられます。空欄にするとそのMODは非表示になります。' +
+            '色は mod-overhead と同一の配色が既定です。ネイティブアプリのステータスバー等、' +
+            'HTML描画に対応しない環境では色は反映されず略号のみ表示されます。' +
             '未知のMODは「正規化名|RARITY」（例: itoentransmuter+|VERY_RARE）の形式で追加してください。' +
             '正規化名 = MOD名を小文字化し、英数字と+−以外を除去したものです。</p>' +
             '<div>新規キー: <input type="text" id="modSbNewKey" placeholder="portalshield|COMMON" style="width:145px;"> ' +
-            '略号: <input type="text" id="modSbNewVal" placeholder="CPS" style="width:55px;"></div>';
+            '略号: <input type="text" id="modSbNewVal" placeholder="CPS" style="width:55px;"> ' +
+            '色: <input type="color" id="modSbNewCol" value="#3584E4" style="width:40px;height:22px;padding:0;border:1px solid #555;background:none;vertical-align:middle;"></div>';
 
         window.dialog({
-            title: 'MOD Statusbar 設定',
+            title: 'MOD Statusbar 設定' +
+                (plugin_info.script && plugin_info.script.version ? ' v' + plugin_info.script.version : ''),
             html: html,
-            width: 380,
+            width: 420,
             buttons: {
                 '保存': function () {
                     var root = this;
                     self.enabled = $(root).find('#modSbEnabled').prop('checked');
+                    self.colored = $(root).find('#modSbColored').prop('checked');
 
                     var newUser = {};
                     $(root).find('input[data-modkey]').each(function () {
@@ -195,11 +316,28 @@ function wrapper(plugin_info) {
                         }
                     });
 
+                    // 色は既定色と異なるものだけを保存 (既定色の変更に追従させるため)
+                    var newColors = {};
+                    $(root).find('input[data-modcolor]').each(function () {
+                        var key = $(this).attr('data-modcolor');
+                        var v = String($(this).val() || '').toLowerCase();
+                        if (v && v !== String(self.defaultColorFor(key)).toLowerCase()) {
+                            newColors[key] = v;
+                        }
+                    });
+
                     var nk = $(root).find('#modSbNewKey').val().trim();
                     var nv = $(root).find('#modSbNewVal').val().trim();
-                    if (nk && nv) newUser[nk] = nv;
+                    if (nk && nv) {
+                        newUser[nk] = nv;
+                        var nc = String($(root).find('#modSbNewCol').val() || '').toLowerCase();
+                        if (nc && nc !== String(self.defaultColorFor(nk)).toLowerCase()) {
+                            newColors[nk] = nc;
+                        }
+                    }
 
                     self.userMap = newUser;
+                    self.userColors = newColors;
                     self.saveSettings();
                     self.loadSettings();
                     self.refresh();
@@ -221,6 +359,9 @@ function wrapper(plugin_info) {
             // 打ち消し線でロード不可を可視化する
             throw new Error('IITC.statusbar.portal.getData not found (incompatible IITC build)');
         }
+
+        // 色付けはHTML描画経路がある場合のみ有効 (無くても略号表示は動作する)
+        self.hookRender();
 
         // ツールボックスに設定リンクを追加
         $('#toolbox').append(
