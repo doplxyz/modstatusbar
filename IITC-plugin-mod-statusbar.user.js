@@ -3,9 +3,9 @@
 // @id             IITC-plugin-mod-statusbar
 // @name           IITC plugin: MOD abbreviation in statusbar
 // @category       d.org.addon
-// @version        1.2.3
+// @version        1.2.4
 // @namespace      https://github.com/IITC-CE/ingress-intel-total-conversion
-// @description    [1.2.3]ステータスバーのポータル名の前に、装着MODの略号を色付きで表示する。ON/OFFトグルと略号・色のユーザーカスタマイズに対応。
+// @description    [1.2.4]ステータスバーのポータル名の前後に、装着MODの略号を色付き・スロット位置固定で表示する。ON/OFFトグル、略号・色・空欄文字・挿入位置のユーザーカスタマイズに対応。
 // @match          https://intel.ingress.com/*
 // @grant          none
 // ==/UserScript==
@@ -21,10 +21,15 @@ function wrapper(plugin_info) {
     var self = window.plugin.modStatusbar;
 
     // ---- 設定キー ---------------------------------------------------------
-    self.KEY_ENABLED = 'plugin-mod-statusbar-enabled';
-    self.KEY_COLORED = 'plugin-mod-statusbar-colored';
-    self.KEY_MAP     = 'plugin-mod-statusbar-map';
-    self.KEY_COLORS  = 'plugin-mod-statusbar-colors';
+    self.KEY_ENABLED  = 'plugin-mod-statusbar-enabled';
+    self.KEY_COLORED  = 'plugin-mod-statusbar-colored';
+    self.KEY_MAP      = 'plugin-mod-statusbar-map';
+    self.KEY_COLORS   = 'plugin-mod-statusbar-colors';
+    self.KEY_BLANK    = 'plugin-mod-statusbar-blank';
+    self.KEY_POSITION = 'plugin-mod-statusbar-position';
+
+    // 空きスロット/非表示MODの既定プレースホルダー文字
+    self.DEFAULT_BLANK = '□';
 
     // ---- 既定の略号テーブル ----------------------------------------------
     // キーは "<正規化MOD名>|<RARITY>"。
@@ -86,11 +91,17 @@ function wrapper(plugin_info) {
     self.effectiveMap = {};
     self.enabled = true;
     self.colored = true;
+    self.blankChar = self.DEFAULT_BLANK;
+    self.prepend = true; // true: MOD略号をポータル名の前に挿入 / false: 後ろに挿入
 
     // ---- 設定の読み書き ---------------------------------------------------
     self.loadSettings = function () {
         self.enabled = (localStorage[self.KEY_ENABLED] !== 'false'); // 既定ON
         self.colored = (localStorage[self.KEY_COLORED] !== 'false'); // 既定ON
+        // 空欄文字は未設定時のみ既定値(□)を使う。ユーザーが明示的に空文字へ
+        // 変更した場合はそれを尊重する(位置を示す隙間だけを残す用途のため)。
+        self.blankChar = (self.KEY_BLANK in localStorage) ? localStorage[self.KEY_BLANK] : self.DEFAULT_BLANK;
+        self.prepend = (localStorage[self.KEY_POSITION] !== 'append'); // 既定は前置
         try {
             self.userMap = JSON.parse(localStorage[self.KEY_MAP] || '{}') || {};
         } catch (e) {
@@ -108,10 +119,12 @@ function wrapper(plugin_info) {
     };
 
     self.saveSettings = function () {
-        localStorage[self.KEY_ENABLED] = self.enabled ? 'true' : 'false';
-        localStorage[self.KEY_COLORED] = self.colored ? 'true' : 'false';
-        localStorage[self.KEY_MAP]     = JSON.stringify(self.userMap || {});
-        localStorage[self.KEY_COLORS]  = JSON.stringify(self.userColors || {});
+        localStorage[self.KEY_ENABLED]  = self.enabled ? 'true' : 'false';
+        localStorage[self.KEY_COLORED]  = self.colored ? 'true' : 'false';
+        localStorage[self.KEY_BLANK]    = self.blankChar;
+        localStorage[self.KEY_POSITION] = self.prepend ? 'prepend' : 'append';
+        localStorage[self.KEY_MAP]      = JSON.stringify(self.userMap || {});
+        localStorage[self.KEY_COLORS]   = JSON.stringify(self.userColors || {});
     };
 
     // ---- MOD -> 略号/色 ----------------------------------------------------
@@ -174,14 +187,28 @@ function wrapper(plugin_info) {
 
     // 選択ポータルのMOD略号列を作る。
     // MODは詳細データ (portalDetail) にのみ含まれる。未ロード時は空を返す。
+    // details.mods は4スロット固定の配列 (空きスロットは null) であり、
+    // 配列インデックス = ポータル上の実際の装着位置に対応する。
+    // 略号を単純に詰めて表示すると、どのスロットが空きなのか位置情報が
+    // 失われる (例: 1番目が空きの場合と3番目が空きの場合が区別できない) ため、
+    // 空き/非表示スロットは self.blankChar で埋めて位置を固定表示する。
     self.buildModEntries = function (guid) {
         if (!guid || !window.portalDetail) return [];
         var details = window.portalDetail.get(guid);
         if (!details || !details.mods) return [];
-        var out = [];
+        var raw = [];
+        var hasAny = false;
         for (var i = 0; i < details.mods.length; i++) {
             var e = self.modToEntry(details.mods[i]);
-            if (e) out.push(e);
+            raw.push(e);
+            if (e) hasAny = true;
+        }
+        // 実際に表示すべきMODが1つも無ければ (空きポータル、または
+        // 全MODがユーザー設定で非表示) 従来通り何も表示しない。
+        if (!hasAny) return [];
+        var out = [];
+        for (var j = 0; j < raw.length; j++) {
+            out.push(raw[j] || { abbr: self.blankChar, color: null, blank: true });
         }
         return out;
     };
@@ -192,13 +219,14 @@ function wrapper(plugin_info) {
     };
 
     // ---- ステータスバーへの差し込み --------------------------------------
-    // IITC.statusbar.portal.getData をラップし、返却データの title に
-    // MOD略号列を前置する。ネイティブ描画 (app.setPortalStatus) と
-    // HTML描画 (#mobileinfo) の両経路がこの getData を通るため、これで足りる。
+    // IITC.statusbar.portal.getData をラップし、返却データの title の前後に
+    // MOD略号列を挿入する (self.prepend で前/後を切替)。ネイティブ描画
+    // (app.setPortalStatus) と HTML描画 (#mobileinfo) の両経路がこの
+    // getData を通るため、これで足りる。
     // 色付けは render ラップ側 (hookRender) で行い、この時点では
     // プレーンテキストのみを扱う。ネイティブ描画はHTMLを解釈できないため。
     // 注意: 返却オブジェクトは _lastSentData としてキャッシュされるため、
-    // 破壊せずシャローコピーへ前置する。
+    // 破壊せずシャローコピーへ挿入する。
     self.hookGetData = function () {
         if (!(window.IITC && IITC.statusbar && IITC.statusbar.portal &&
               typeof IITC.statusbar.portal.getData === 'function')) {
@@ -212,17 +240,21 @@ function wrapper(plugin_info) {
             if (!self.enabled || !data || !data.title) return data;
             var entries = self.buildModEntries(data.guid || guid);
             if (!entries.length) return data;
-            var plain = entries.map(function (e) { return e.abbr; }).join(',') + ',';
-            var out = Object.assign({}, data, { title: plain + data.title });
-            // render ラップが色付きHTMLへ置換するための情報 (プレーン前置文字列と
+            // MOD間はカンマ区切り、タイトル本体とはスペース区切り。
+            // 例: "AS,□,禿,VRHS ○○% ポータル名"
+            var plain = entries.map(function (e) { return e.abbr; }).join(',');
+            var title = self.prepend ? (plain + ' ' + data.title) : (data.title + ' ' + plain);
+            var out = Object.assign({}, data, { title: title });
+            // render ラップが色付きHTMLへ置換するための情報 (プレーンMOD文字列と
             // 対応する色付きHTML)。render 未対応ビルドでは単に無視される。
             out.__modPlain = plain;
             out.__modHtml = entries.map(function (e) {
+                if (e.blank) return self.escapeHtml(e.abbr); // 空きスロットは無色のまま
                 // 記号色 + 同色グロー (mod-overhead と同じ視認性向上手法)
                 return '<span style="color:' + e.color +
                        ';text-shadow:0 0 3px ' + e.color + ',0 0 3px ' + e.color + ',0 0 1px #000;">' +
                        self.escapeHtml(e.abbr) + '</span>';
-            }).join(',') + ',';
+            }).join(',');
             return out;
         };
         return true;
@@ -282,12 +314,18 @@ function wrapper(plugin_info) {
         var html = '' +
             '<div style="margin-bottom:8px;">' +
             '<label><input type="checkbox" id="modSbEnabled"' + (self.enabled ? ' checked' : '') + '> MOD略号を表示する</label><br>' +
-            '<label><input type="checkbox" id="modSbColored"' + (self.colored ? ' checked' : '') + '> 略号を色付きで表示する</label>' +
+            '<label><input type="checkbox" id="modSbColored"' + (self.colored ? ' checked' : '') + '> 略号を色付きで表示する</label><br>' +
+            '<label><input type="checkbox" id="modSbPrepend"' + (self.prepend ? ' checked' : '') +
+            '> ポータル名の前に挿入する (OFFで後ろに挿入)</label><br>' +
+            '空欄文字 (空きスロット/非表示MODの表示): ' +
+            '<input type="text" id="modSbBlank" value="' + self.escapeHtml(self.blankChar) + '" style="width:40px;text-align:center;">' +
             '</div>' +
             '<div style="max-height:45vh;overflow:auto;border:1px solid #666;">' +
             '<table style="width:100%;border-collapse:collapse;">' + rows + '</table>' +
             '</div>' +
-            '<p style="margin:6px 0;font-size:11px;">略号と色は自由に書き換えられます。空欄にするとそのMODは非表示になります。' +
+            '<p style="margin:6px 0;font-size:11px;">略号と色は自由に書き換えられます。空欄にするとそのMODは非表示になりますが、' +
+            '他にMODが装着されている場合はスロット位置を保つため「空欄文字」で埋められます ' +
+            '(例: 1番目のMODが空き/非表示なら「□,RPS,禿,VRHS」のように表示され、どのスロットが空きか一目で分かります)。' +
             '色は mod-overhead と同一の配色が既定です。ネイティブアプリのステータスバー等、' +
             'HTML描画に対応しない環境では色は反映されず略号のみ表示されます。' +
             '未知のMODは「正規化名|RARITY」（例: itoentransmuter+|VERY_RARE）の形式で追加してください。' +
@@ -306,6 +344,8 @@ function wrapper(plugin_info) {
                     var root = this;
                     self.enabled = $(root).find('#modSbEnabled').prop('checked');
                     self.colored = $(root).find('#modSbColored').prop('checked');
+                    self.prepend = $(root).find('#modSbPrepend').prop('checked');
+                    self.blankChar = $(root).find('#modSbBlank').val();
 
                     var newUser = {};
                     $(root).find('input[data-modkey]').each(function () {
