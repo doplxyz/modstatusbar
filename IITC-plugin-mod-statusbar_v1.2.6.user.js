@@ -3,9 +3,9 @@
 // @id             IITC-plugin-mod-statusbar
 // @name           IITC plugin: MOD abbreviation in statusbar
 // @category       d.org.addon
-// @version        1.2.5
+// @version        1.2.6
 // @namespace      https://github.com/IITC-CE/ingress-intel-total-conversion
-// @description    [1.2.5]ステータスバーのポータル名の前後に、装着MODの略号を色付き・スロット位置固定で表示する。ON/OFFトグル、略号・色・空欄文字・挿入位置のユーザーカスタマイズに対応。IITC.statusbar API の無い旧ビルド (iOS版アプリ等) にもフォールバック対応。
+// @description    [1.2.6]ステータスバーのポータル名の前後に、装着MODの略号を色付き・スロット位置固定で表示する。ON/OFFトグル、略号・色・空欄文字・挿入位置のユーザーカスタマイズに対応。IITC.statusbar API の無い旧ビルド (iOS版アプリ等) にもフォールバック対応。設定画面はモバイル向けにスリム化。
 // @match          https://intel.ingress.com/*
 // @grant          none
 // ==/UserScript==
@@ -157,34 +157,6 @@ function wrapper(plugin_info) {
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     };
-
-    // "#RGB" / "#RRGGBB" (#省略可) を小文字の "#rrggbb" へ正規化。不正なら null。
-    self.normalizeHex = function (v) {
-        v = String(v || '').trim();
-        var m = v.match(/^#?([0-9a-fA-F]{6})$/);
-        if (m) return ('#' + m[1]).toLowerCase();
-        m = v.match(/^#?([0-9a-fA-F]{3})$/);
-        if (m) {
-            var s = m[1];
-            return ('#' + s.charAt(0) + s.charAt(0) + s.charAt(1) + s.charAt(1) +
-                    s.charAt(2) + s.charAt(2)).toLowerCase();
-        }
-        return null;
-    };
-
-    // <input type="color"> が使えるか判定 (旧WebView等では text 扱いになる)。
-    // ※ iOSアプリ内WebViewでは「対応と判定されるのにパレットが開かない」
-    //   事例があるため、判定結果に関わらず16進数の直接入力欄は常に表示する。
-    self.colorInputSupported = (function () {
-        try {
-            var i = document.createElement('input');
-            i.setAttribute('type', 'color');
-            i.value = '!';
-            return i.type === 'color' && i.value !== '!';
-        } catch (e) {
-            return false;
-        }
-    })();
 
     // MOD 1個を {abbr, color} に変換する。非表示設定なら null。
     self.modToEntry = function (mod) {
@@ -390,34 +362,28 @@ function wrapper(plugin_info) {
     };
 
     // ---- 設定UI ------------------------------------------------------------
-    // 色の入力UI: 16進数のテキスト入力を常設し、<input type="color"> が使える
-    // 環境ではパレットも併設する (双方向同期)。パレットが開かない環境
-    // (iOS版IITCアプリ等) ではプレビュー用スウォッチのみ表示する。
-    self.colorCellHtml = function (attr, key, color) {
-        var h = '<input type="text" data-' + attr + '="' + key + '" value="' + color +
-                '" maxlength="7" style="width:62px;"> ';
-        if (self.colorInputSupported) {
-            h += '<input type="color" data-' + attr + 'picker="' + key + '" value="' + color +
-                 '" style="width:28px;height:22px;padding:0;border:1px solid #555;background:none;vertical-align:middle;">';
-        } else {
-            h += '<span data-' + attr + 'swatch="' + key + '" style="display:inline-block;width:18px;height:18px;' +
-                 'border:1px solid #555;vertical-align:middle;background:' + color + ';"></span>';
-        }
-        return h;
+    // MOD一覧の並び順: defaultMap の定義順 (MODグループごとにまとまった順序)
+    // を維持する。effectiveMap にのみ存在するキー (旧バージョンで手動追加
+    // されたもの等) は末尾にソートして追加する。
+    self.orderedKeys = function () {
+        var out = Object.keys(self.defaultMap).filter(function (k) { return k in self.effectiveMap; });
+        var extra = Object.keys(self.effectiveMap).filter(function (k) { return !(k in self.defaultMap); }).sort();
+        return out.concat(extra);
     };
 
     self.showSettings = function () {
-        var keys = Object.keys(self.effectiveMap).sort();
-        var thStyle = 'text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid #555;padding:2px 6px;';
+        var keys = self.orderedKeys();
+        var thStyle = 'text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid #555;padding:2px 4px;';
         var rows = '<tr><th style="' + thStyle + '">MOD</th><th style="' + thStyle + '">略号</th><th style="' + thStyle + '">色</th></tr>';
         for (var i = 0; i < keys.length; i++) {
             var k = keys[i];
             var parts = k.split('|');
             var val = self.effectiveMap[k] || '';
             rows += '<tr>' +
-                '<td style="padding:2px 6px;white-space:nowrap;">' + parts[0] + ' (' + parts[1] + ')</td>' +
-                '<td><input type="text" data-modkey="' + k + '" value="' + val + '" style="width:70px;"></td>' +
-                '<td style="white-space:nowrap;">' + self.colorCellHtml('modcolor', k, self.colorFor(k)) + '</td>' +
+                '<td style="padding:2px 4px;white-space:nowrap;">' + parts[0] + ' (' + parts[1] + ')</td>' +
+                '<td><input type="text" data-modkey="' + k + '" value="' + val + '" style="width:35px;"></td>' +
+                '<td><input type="color" data-modcolor="' + k + '" value="' + self.colorFor(k) +
+                '" style="width:40px;height:24px;padding:0;border:1px solid #555;background:none;vertical-align:middle;"></td>' +
                 '</tr>';
         }
 
@@ -427,29 +393,22 @@ function wrapper(plugin_info) {
             '<label><input type="checkbox" id="modSbColored"' + (self.colored ? ' checked' : '') + '> 略号を色付きで表示する</label><br>' +
             '<label><input type="checkbox" id="modSbPrepend"' + (self.prepend ? ' checked' : '') +
             '> ポータル名の前に挿入する (OFFで後ろに挿入)</label><br>' +
-            '空欄文字 (空きスロット/非表示MODの表示): ' +
-            '<input type="text" id="modSbBlank" value="' + self.escapeHtml(self.blankChar) + '" style="width:40px;text-align:center;">' +
+            '空欄文字: ' +
+            '<input type="text" id="modSbBlank" value="' + self.escapeHtml(self.blankChar) + '" style="width:35px;text-align:center;">' +
             '</div>' +
             '<div style="max-height:45vh;overflow:auto;border:1px solid #666;">' +
             '<table style="width:100%;border-collapse:collapse;">' + rows + '</table>' +
             '</div>' +
-            '<p style="margin:6px 0;font-size:11px;">略号と色は自由に書き換えられます。空欄にするとそのMODは非表示になりますが、' +
+            '<p style="margin:6px 0;font-size:11px;">空欄にするとそのMODは非表示になりますが、' +
             '他にMODが装着されている場合はスロット位置を保つため「空欄文字」で埋められます ' +
-            '(例: 1番目のMODが空き/非表示なら「□,RPS,禿,VRHS」のように表示され、どのスロットが空きか一目で分かります)。' +
-            '色は mod-overhead と同一の配色が既定です。' +
-            '色はカラーパレットが使えない環境 (iOS版IITCアプリ等) でも「#RRGGBB」形式で直接入力できます。' +
-            'ネイティブアプリのステータスバー等、HTML描画に対応しない環境では色は反映されず略号のみ表示されます。' +
-            '未知のMODは「正規化名|RARITY」（例: itoentransmuter+|VERY_RARE）の形式で追加してください。' +
-            '正規化名 = MOD名を小文字化し、英数字と+−以外を除去したものです。</p>' +
-            '<div style="white-space:nowrap;">新規キー: <input type="text" id="modSbNewKey" placeholder="portalshield|COMMON" style="width:145px;"> ' +
-            '略号: <input type="text" id="modSbNewVal" placeholder="CPS" style="width:55px;"> ' +
-            '色: ' + self.colorCellHtml('modnewcol', 'new', '#3584E4') + '</div>';
+            '(例: 1番目が空き/非表示なら「□,RPS,禿,VRHS」)。' +
+            '色は mod-overhead と同一の配色が既定です。</p>';
 
         window.dialog({
             title: 'MOD Statusbar 設定' +
                 (plugin_info.script && plugin_info.script.version ? ' v' + plugin_info.script.version : ''),
             html: html,
-            width: 420,
+            width: 300,
             buttons: {
                 '保存': function () {
                     var root = this;
@@ -467,26 +426,15 @@ function wrapper(plugin_info) {
                         }
                     });
 
-                    // 色は既定色と異なるものだけを保存 (既定色の変更に追従させるため)。
-                    // 値はテキスト欄 (16進数) から読む。不正な値は無視して既定色に戻す。
+                    // 色は既定色と異なるものだけを保存 (既定色の変更に追従させるため)
                     var newColors = {};
                     $(root).find('input[data-modcolor]').each(function () {
                         var key = $(this).attr('data-modcolor');
-                        var v = self.normalizeHex($(this).val());
+                        var v = String($(this).val() || '').toLowerCase();
                         if (v && v !== String(self.defaultColorFor(key)).toLowerCase()) {
                             newColors[key] = v;
                         }
                     });
-
-                    var nk = $(root).find('#modSbNewKey').val().trim();
-                    var nv = $(root).find('#modSbNewVal').val().trim();
-                    if (nk && nv) {
-                        newUser[nk] = nv;
-                        var nc = self.normalizeHex($(root).find('input[data-modnewcol]').val());
-                        if (nc && nc !== String(self.defaultColorFor(nk)).toLowerCase()) {
-                            newColors[nk] = nc;
-                        }
-                    }
 
                     self.userMap = newUser;
                     self.userColors = newColors;
@@ -500,40 +448,6 @@ function wrapper(plugin_info) {
                 }
             }
         });
-
-        // テキスト欄とパレット/スウォッチの双方向同期 (ダイアログ開き直しでも
-        // 多重登録されないよう名前空間付きで張り直す)
-        var syncFromText = function (input, attr) {
-            var hex = self.normalizeHex($(input).val());
-            if (!hex) return;
-            var key = $(input).attr('data-' + attr);
-            $('input[data-' + attr + 'picker]').filter(function () {
-                return $(this).attr('data-' + attr + 'picker') === key;
-            }).val(hex);
-            $('[data-' + attr + 'swatch]').filter(function () {
-                return $(this).attr('data-' + attr + 'swatch') === key;
-            }).css('background', hex);
-        };
-        var syncFromPicker = function (input, attr) {
-            var key = $(input).attr('data-' + attr + 'picker');
-            var hex = String($(input).val() || '');
-            $('input[data-' + attr + ']').filter(function () {
-                return $(this).attr('data-' + attr) === key;
-            }).val(hex);
-        };
-        $(document).off('.modSbColor')
-            .on('input.modSbColor change.modSbColor', 'input[data-modcolor]', function () {
-                syncFromText(this, 'modcolor');
-            })
-            .on('input.modSbColor change.modSbColor', 'input[data-modcolorpicker]', function () {
-                syncFromPicker(this, 'modcolor');
-            })
-            .on('input.modSbColor change.modSbColor', 'input[data-modnewcol]', function () {
-                syncFromText(this, 'modnewcol');
-            })
-            .on('input.modSbColor change.modSbColor', 'input[data-modnewcolpicker]', function () {
-                syncFromPicker(this, 'modnewcol');
-            });
     };
 
     // ---- setup --------------------------------------------------------------
