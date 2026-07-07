@@ -3,9 +3,9 @@
 // @id             IITC-plugin-mod-statusbar
 // @name           IITC plugin: MOD abbreviation in statusbar
 // @category       d.org.addon
-// @version        1.2.5
+// @version        1.2.4
 // @namespace      https://github.com/IITC-CE/ingress-intel-total-conversion
-// @description    [1.2.5]ステータスバーのポータル名の前後に、装着MODの略号を色付き・スロット位置固定で表示する。ON/OFFトグル、略号・色・空欄文字・挿入位置のユーザーカスタマイズに対応。IITC.statusbar API の無い旧ビルド (iOS版アプリ等) にもフォールバック対応。
+// @description    [1.2.4]ステータスバーのポータル名の前後に、装着MODの略号を色付き・スロット位置固定で表示する。ON/OFFトグル、略号・色・空欄文字・挿入位置のユーザーカスタマイズに対応。
 // @match          https://intel.ingress.com/*
 // @grant          none
 // ==/UserScript==
@@ -158,34 +158,6 @@ function wrapper(plugin_info) {
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     };
 
-    // "#RGB" / "#RRGGBB" (#省略可) を小文字の "#rrggbb" へ正規化。不正なら null。
-    self.normalizeHex = function (v) {
-        v = String(v || '').trim();
-        var m = v.match(/^#?([0-9a-fA-F]{6})$/);
-        if (m) return ('#' + m[1]).toLowerCase();
-        m = v.match(/^#?([0-9a-fA-F]{3})$/);
-        if (m) {
-            var s = m[1];
-            return ('#' + s.charAt(0) + s.charAt(0) + s.charAt(1) + s.charAt(1) +
-                    s.charAt(2) + s.charAt(2)).toLowerCase();
-        }
-        return null;
-    };
-
-    // <input type="color"> が使えるか判定 (旧WebView等では text 扱いになる)。
-    // ※ iOSアプリ内WebViewでは「対応と判定されるのにパレットが開かない」
-    //   事例があるため、判定結果に関わらず16進数の直接入力欄は常に表示する。
-    self.colorInputSupported = (function () {
-        try {
-            var i = document.createElement('input');
-            i.setAttribute('type', 'color');
-            i.value = '!';
-            return i.type === 'color' && i.value !== '!';
-        } catch (e) {
-            return false;
-        }
-    })();
-
     // MOD 1個を {abbr, color} に変換する。非表示設定なら null。
     self.modToEntry = function (mod) {
         if (!mod) return null;
@@ -315,97 +287,14 @@ function wrapper(plugin_info) {
         return true;
     };
 
-    // ---- 旧ビルド (IITC.statusbar が無い環境) 向けフォールバック ----------
-    // iOS版IITCアプリ等の旧IITCビルドには IITC.statusbar.portal が存在せず、
-    // スマホ用ステータスバーは window.smartphoneInfo() が #mobileinfo を
-    // 直接書き換える方式になっている。この環境では smartphoneInfo をラップし、
-    // 描画後の #mobileinfo にMOD略号ブロックを差し込む。
-    // #mobileinfo はHTMLなので、この経路では色付けもそのまま有効。
-
-    // #mobileinfo へMOD略号を差し込む (何度呼んでも二重挿入しない)
-    self.decorateMobileinfo = function (guid) {
-        var el = $('#mobileinfo');
-        if (!el.length) return;
-        el.find('.mod-statusbar-mods').remove(); // 再描画・再呼び出し時の二重挿入防止
-        if (!self.enabled) return;
-        guid = guid || window.selectedPortal;
-        var entries = self.buildModEntries(guid);
-        if (!entries.length) return;
-        var inner = entries.map(function (e) {
-            if (e.blank || !self.colored) return self.escapeHtml(e.abbr);
-            return '<span style="color:' + e.color +
-                   ';text-shadow:0 0 3px ' + e.color + ',0 0 3px ' + e.color + ',0 0 1px #000;">' +
-                   self.escapeHtml(e.abbr) + '</span>';
-        }).join(',');
-        var block = '<span class="mod-statusbar-mods">' +
-            (self.prepend ? inner + ' ' : ' ' + inner) + '</span>';
-        if (self.prepend) el.prepend(block);
-        else el.append(block);
-    };
-
-    self.hookSmartphoneInfo = function () {
-        if (typeof window.smartphoneInfo !== 'function') return false;
-        if (window.smartphoneInfo.__modWrapped) return true; // 二重ラップ防止
-        var orig = window.smartphoneInfo;
-        window.smartphoneInfo = function (data) {
-            orig.apply(this, arguments);
-            try {
-                self.decorateMobileinfo(data && data.selectedPortalGuid);
-            } catch (e) {
-                console.error('mod-statusbar decorate error', e);
-            }
-        };
-        window.smartphoneInfo.__modWrapped = true;
-
-        if (typeof window.addHook === 'function') {
-            // プラグインのロード順によっては portalSelected フックが元の
-            // smartphoneInfo を直接参照していて上のラップを経由しない。
-            // 自前フックでバー描画後 (setTimeout) に差し込む (差し込みは冪等)。
-            window.addHook('portalSelected', function (data) {
-                setTimeout(function () {
-                    self.decorateMobileinfo(data && data.selectedPortalGuid);
-                }, 0);
-            });
-            // MODは詳細データにのみ含まれ、選択直後にはまだ届いていない。
-            // 詳細ロード完了時にバーを再描画して略号を反映する。
-            window.addHook('portalDetailsUpdated', function (data) {
-                if (data && data.guid && data.guid === window.selectedPortal) {
-                    window.smartphoneInfo({ selectedPortalGuid: data.guid });
-                }
-            });
-        }
-        return true;
-    };
-
     // 設定変更後にステータスバーを再描画させる
     self.refresh = function () {
         if (window.IITC && IITC.statusbar && IITC.statusbar.portal && window.selectedPortal) {
             IITC.statusbar.portal.update({ selectedPortalGuid: window.selectedPortal });
-            return;
-        }
-        // 旧ビルド: バーを再描画して差し込み直す
-        if (window.selectedPortal && typeof window.smartphoneInfo === 'function') {
-            window.smartphoneInfo({ selectedPortalGuid: window.selectedPortal });
         }
     };
 
     // ---- 設定UI ------------------------------------------------------------
-    // 色の入力UI: 16進数のテキスト入力を常設し、<input type="color"> が使える
-    // 環境ではパレットも併設する (双方向同期)。パレットが開かない環境
-    // (iOS版IITCアプリ等) ではプレビュー用スウォッチのみ表示する。
-    self.colorCellHtml = function (attr, key, color) {
-        var h = '<input type="text" data-' + attr + '="' + key + '" value="' + color +
-                '" maxlength="7" style="width:62px;"> ';
-        if (self.colorInputSupported) {
-            h += '<input type="color" data-' + attr + 'picker="' + key + '" value="' + color +
-                 '" style="width:28px;height:22px;padding:0;border:1px solid #555;background:none;vertical-align:middle;">';
-        } else {
-            h += '<span data-' + attr + 'swatch="' + key + '" style="display:inline-block;width:18px;height:18px;' +
-                 'border:1px solid #555;vertical-align:middle;background:' + color + ';"></span>';
-        }
-        return h;
-    };
-
     self.showSettings = function () {
         var keys = Object.keys(self.effectiveMap).sort();
         var thStyle = 'text-align:left;font-size:11px;color:#aaa;border-bottom:1px solid #555;padding:2px 6px;';
@@ -417,7 +306,8 @@ function wrapper(plugin_info) {
             rows += '<tr>' +
                 '<td style="padding:2px 6px;white-space:nowrap;">' + parts[0] + ' (' + parts[1] + ')</td>' +
                 '<td><input type="text" data-modkey="' + k + '" value="' + val + '" style="width:70px;"></td>' +
-                '<td style="white-space:nowrap;">' + self.colorCellHtml('modcolor', k, self.colorFor(k)) + '</td>' +
+                '<td><input type="color" data-modcolor="' + k + '" value="' + self.colorFor(k) +
+                '" style="width:40px;height:22px;padding:0;border:1px solid #555;background:none;vertical-align:middle;"></td>' +
                 '</tr>';
         }
 
@@ -436,14 +326,13 @@ function wrapper(plugin_info) {
             '<p style="margin:6px 0;font-size:11px;">略号と色は自由に書き換えられます。空欄にするとそのMODは非表示になりますが、' +
             '他にMODが装着されている場合はスロット位置を保つため「空欄文字」で埋められます ' +
             '(例: 1番目のMODが空き/非表示なら「□,RPS,禿,VRHS」のように表示され、どのスロットが空きか一目で分かります)。' +
-            '色は mod-overhead と同一の配色が既定です。' +
-            '色はカラーパレットが使えない環境 (iOS版IITCアプリ等) でも「#RRGGBB」形式で直接入力できます。' +
-            'ネイティブアプリのステータスバー等、HTML描画に対応しない環境では色は反映されず略号のみ表示されます。' +
+            '色は mod-overhead と同一の配色が既定です。ネイティブアプリのステータスバー等、' +
+            'HTML描画に対応しない環境では色は反映されず略号のみ表示されます。' +
             '未知のMODは「正規化名|RARITY」（例: itoentransmuter+|VERY_RARE）の形式で追加してください。' +
             '正規化名 = MOD名を小文字化し、英数字と+−以外を除去したものです。</p>' +
-            '<div style="white-space:nowrap;">新規キー: <input type="text" id="modSbNewKey" placeholder="portalshield|COMMON" style="width:145px;"> ' +
+            '<div>新規キー: <input type="text" id="modSbNewKey" placeholder="portalshield|COMMON" style="width:145px;"> ' +
             '略号: <input type="text" id="modSbNewVal" placeholder="CPS" style="width:55px;"> ' +
-            '色: ' + self.colorCellHtml('modnewcol', 'new', '#3584E4') + '</div>';
+            '色: <input type="color" id="modSbNewCol" value="#3584E4" style="width:40px;height:22px;padding:0;border:1px solid #555;background:none;vertical-align:middle;"></div>';
 
         window.dialog({
             title: 'MOD Statusbar 設定' +
@@ -467,12 +356,11 @@ function wrapper(plugin_info) {
                         }
                     });
 
-                    // 色は既定色と異なるものだけを保存 (既定色の変更に追従させるため)。
-                    // 値はテキスト欄 (16進数) から読む。不正な値は無視して既定色に戻す。
+                    // 色は既定色と異なるものだけを保存 (既定色の変更に追従させるため)
                     var newColors = {};
                     $(root).find('input[data-modcolor]').each(function () {
                         var key = $(this).attr('data-modcolor');
-                        var v = self.normalizeHex($(this).val());
+                        var v = String($(this).val() || '').toLowerCase();
                         if (v && v !== String(self.defaultColorFor(key)).toLowerCase()) {
                             newColors[key] = v;
                         }
@@ -482,7 +370,7 @@ function wrapper(plugin_info) {
                     var nv = $(root).find('#modSbNewVal').val().trim();
                     if (nk && nv) {
                         newUser[nk] = nv;
-                        var nc = self.normalizeHex($(root).find('input[data-modnewcol]').val());
+                        var nc = String($(root).find('#modSbNewCol').val() || '').toLowerCase();
                         if (nc && nc !== String(self.defaultColorFor(nk)).toLowerCase()) {
                             newColors[nk] = nc;
                         }
@@ -500,58 +388,20 @@ function wrapper(plugin_info) {
                 }
             }
         });
-
-        // テキスト欄とパレット/スウォッチの双方向同期 (ダイアログ開き直しでも
-        // 多重登録されないよう名前空間付きで張り直す)
-        var syncFromText = function (input, attr) {
-            var hex = self.normalizeHex($(input).val());
-            if (!hex) return;
-            var key = $(input).attr('data-' + attr);
-            $('input[data-' + attr + 'picker]').filter(function () {
-                return $(this).attr('data-' + attr + 'picker') === key;
-            }).val(hex);
-            $('[data-' + attr + 'swatch]').filter(function () {
-                return $(this).attr('data-' + attr + 'swatch') === key;
-            }).css('background', hex);
-        };
-        var syncFromPicker = function (input, attr) {
-            var key = $(input).attr('data-' + attr + 'picker');
-            var hex = String($(input).val() || '');
-            $('input[data-' + attr + ']').filter(function () {
-                return $(this).attr('data-' + attr) === key;
-            }).val(hex);
-        };
-        $(document).off('.modSbColor')
-            .on('input.modSbColor change.modSbColor', 'input[data-modcolor]', function () {
-                syncFromText(this, 'modcolor');
-            })
-            .on('input.modSbColor change.modSbColor', 'input[data-modcolorpicker]', function () {
-                syncFromPicker(this, 'modcolor');
-            })
-            .on('input.modSbColor change.modSbColor', 'input[data-modnewcol]', function () {
-                syncFromText(this, 'modnewcol');
-            })
-            .on('input.modSbColor change.modSbColor', 'input[data-modnewcolpicker]', function () {
-                syncFromPicker(this, 'modnewcol');
-            });
     };
 
     // ---- setup --------------------------------------------------------------
     var setup = function () {
         self.loadSettings();
 
-        // 新API (IITC.statusbar.portal) → 旧API (smartphoneInfo/#mobileinfo) の
-        // 順で差し込み先を探す。どちらも無くても throw しない。
-        // (旧版はここで throw していたため、iOS版アプリ等の旧ビルドで
-        //  プラグイン一覧に打ち消し線が引かれ「起動しない」状態になっていた)
-        if (self.hookGetData()) {
-            // 色付けはHTML描画経路がある場合のみ有効 (無くても略号表示は動作する)
-            self.hookRender();
-        } else if (!self.hookSmartphoneInfo()) {
-            console.warn('mod-statusbar: 対応するステータスバーAPIが見つかりません ' +
-                '(IITC.statusbar.portal / smartphoneInfo とも無し)。' +
-                'MOD略号は表示されませんが、設定UIは利用できます。');
+        if (!self.hookGetData()) {
+            // このビルドに statusbar API が無い場合は明示的に失敗させ、
+            // 打ち消し線でロード不可を可視化する
+            throw new Error('IITC.statusbar.portal.getData not found (incompatible IITC build)');
         }
+
+        // 色付けはHTML描画経路がある場合のみ有効 (無くても略号表示は動作する)
+        self.hookRender();
 
         // ツールボックスに設定リンクを追加
         $('#toolbox').append(
